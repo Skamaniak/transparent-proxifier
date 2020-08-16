@@ -1,0 +1,50 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+require 'yaml'
+machines = YAML.load_file('machines.yml')
+
+Vagrant.configure("2") do |config|
+  machines.each do |machines|
+    config.vm.define machines["name"] do |machine|
+      # box settings
+      machine.vm.hostname = machines["name"]
+      machine.vm.box = machines["box"]
+      machine.vm.synced_folder ".", "/vagrant", disabled: true
+      machine.vm.network "private_network", ip: machines["ip"]
+
+      ## virtualbox settings
+      machine.vm.provider :virtualbox do |vb|
+        vb.name = machines["name"]
+        vb.cpus = machines["cpus"]
+        vb.memory = machines["memory"]
+        vb.gui = false
+      end
+
+      machine.vm.provision "file", source: machines["wg-conf"], destination: "/home/vagrant/wg0.conf"
+      machine.vm.provision "shell", name: "install-wireguard", path: "scripts/install-wireguard.sh"
+
+      ## Client specific
+      if machines["name"] == 'client'
+        ## This config needs to be separate because if the same script is used for both, in the second pass (server init) the script
+        ## gets applied first before any other (even though the ordering in Vagrantfile says otherwise) which breaks the order of initialisation
+        machine.vm.provision "shell", name: "configure-wireguard-client", path: "scripts/configure-wireguard-client.sh"
+      end
+
+      ## Server specific
+      if machines["name"] == 'server'
+        machine.vm.synced_folder "D:/Workspace/Repositories", "/home/vagrant/workspace/repositories", owner: "vagrant", group: "vagrant"
+
+        machine.vm.provision "shell", name: "install-iptables-persistence", path: "scripts/install-iptables-persistence.sh"
+        machine.vm.provision "shell", name: "install-golang", path: "scripts/install-golang.sh", privileged: false
+
+        machine.vm.provision "shell", name: "configure-tproxy", path: "scripts/configure-tproxy.sh"
+        machine.vm.provision "shell", name: "configure-wireguard-server", path: "scripts/configure-wireguard-server.sh"
+      end
+
+
+    end
+  end
+end
+
+
