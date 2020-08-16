@@ -1,0 +1,98 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+require 'yaml'
+machines = YAML.load_file('machines.yml')
+
+Vagrant.configure("2") do |config|
+  machines.each do |machines|
+    config.vm.define machines["name"] do |machine|
+      # box settings
+      machine.vm.hostname = machines["name"]
+      machine.vm.box = machines["box"]
+      machine.vm.synced_folder ".", "/vagrant", disabled: true
+      machine.vm.network "private_network", ip: machines["ip"]
+
+      # virtualbox settings
+      machine.vm.provider :virtualbox do |vb|
+        vb.name = machines["name"]
+        vb.cpus = machines["cpus"]
+        vb.memory = machines["memory"]
+        vb.gui = false
+      end
+
+      config.vm.provision "file", source: machines["wg-conf"], destination: "/home/vagrant/wg0.conf"
+
+      ## Server specific
+      if machines["name"] == 'server'
+        config.vm.synced_folder "D:/Workspace/Repositories", "/home/vagrant/workspace/repositories", owner: "vagrant", group: "vagrant"
+
+        machine.vm.provision "shell", name: "server only", inline: <<-SHELL
+          # Setup permissions
+          chown vagrant workspace
+
+          # Setup forwarding
+          echo "net.ipv4.ip_forward=1" >>/etc/sysctl.conf
+          sysctl -p
+          echo 1 > /proc/sys/net/ipv4/ip_forward # maybe unnecessary
+
+          # Setup routes
+          iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+          iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+          iptables -A INPUT -p udp -m udp --dport 51820 -m conntrack --ctstate NEW -j ACCEPT
+          iptables -A INPUT -s 10.200.200.0/24 -p tcp -m tcp --dport 53 -m conntrack --ctstate NEW -j ACCEPT
+          iptables -A INPUT -s 10.200.200.0/24 -p udp -m udp --dport 53 -m conntrack --ctstate NEW -j ACCEPT
+          iptables -A FORWARD -i wg0 -o wg0 -m conntrack --ctstate NEW -j ACCEPT
+
+          # Install iptables persistance
+          echo iptables-persistent iptables-persistent/autosave_v4 boolean true | sudo debconf-set-selections
+          echo iptables-persistent iptables-persistent/autosave_v6 boolean true | sudo debconf-set-selections
+          apt-get install -y iptables-persistent
+          systemctl enable netfilter-persistent
+          netfilter-persistent save
+        SHELL
+
+        machine.vm.provision "shell", name: "server only - golang", privileged: false, inline: <<-SHELL
+          # Install golang
+          mkdir workspace/sdks workspace/sdks/go_1.14.7
+          cd workspace/sdks/go_1.14.7
+          wget https://golang.org/dl/go1.14.7.linux-amd64.tar.gz -o /dev/null
+          tar -xf go1.14.7.linux-amd64.tar.gz
+          sudo ln -s /home/vagrant/workspace/sdks/go_1.14.7/go /usr/local/go
+
+          echo '#Custom settings' >> /home/vagrant/.profile
+          echo 'export GOROOT=/usr/local/go' >> /home/vagrant/.profile
+          echo 'export GOPATH=$HOME/go' >> /home/vagrant/.profile
+          echo 'export PATH=$GOPATH/bin:$GOROOT/bin:$PATH' >> /home/vagrant/.profile
+          source /home/vagrant/.profile
+        SHELL
+
+        machine.vm.provision "shell", name: "server only - TProxy setup", privileged: false, inline: <<-SHELL
+          # https://powerdns.org/tproxydoc/tproxy.md.html
+          iptables -t mangle -N DIVERT
+          iptables -t mangle -A PREROUTING -p tcp -m socket -j DIVERT
+          iptables -t mangle -A DIVERT -j MARK --set-mark 1
+          iptables -t mangle -A DIVERT -j ACCEPT
+
+          ip rule add fwmark 1 lookup 100
+          ip route add local 0.0.0.0/0 dev lo table 100
+
+          iptables -t mangle -A PREROUTING -p tcp --dport 80 -j TPROXY --tproxy-mark 0x1/0x1 --on-port 8080
+          netfilter-persistent save
+        SHELL
+      end
+
+      # provision all
+      machine.vm.provision "shell", name: "all", inline: <<-SHELL
+        sudo echo "deb http://deb.debian.org/debian/ unstable main" > /etc/apt/sources.list.d/unstable.list
+        sudo printf 'Package: *\nPin: release a=unstable\nPin-Priority: 90\n' > /etc/apt/preferences.d/limit-unstable
+        sudo apt update -y && sudo apt install -y wireguard
+
+        sudo cp /home/vagrant/wg0.conf /etc/wireguard/
+        wg-quick up wg0
+      SHELL
+    end
+  end
+end
+
+

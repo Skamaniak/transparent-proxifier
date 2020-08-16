@@ -1,0 +1,12 @@
+- name: client
+  box: generic/debian10
+  ip: 192.168.100.10
+  cpus: 1
+  memory: 1024
+  wg-conf: ./client/wg0.conf
+- name: server
+  box: generic/debian10
+  ip: 192.168.100.20
+  cpus: 1
+  memory: 1024
+  wg-conf: ./server/wg0.conf
