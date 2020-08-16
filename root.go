@@ -3,49 +3,44 @@ package main
 import (
 	"fmt"
 	"github.com/LiamHaworth/go-tproxy"
+	"github.com/spf13/viper"
 	"io"
 	"log"
 	"net"
-	"os"
-	"os/signal"
-)
-
-var (
-	// tcpListener represents the TCP
-	// listening socket that will receive
-	// TCP connections from TProxy
-	tcpListener net.Listener
+	"net/http"
+	"transparent-proxifier/vagrant/conf"
 )
 
 // main will initialize the TProxy
 // handling application
 func main() {
+	conf.InitConfig()
+
 	log.Println("Starting GoLang TProxy example")
-	var err error
 
-	log.Println("Binding TCP TProxy listener to 0.0.0.0:8080")
-	tcpListener, err = tproxy.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 8080})
-	if err != nil {
-		log.Fatalf("Encountered error while binding listener: %s", err)
-		return
-	}
-
-	defer tcpListener.Close()
-	go listenTCP()
-
-	interruptListener := make(chan os.Signal)
-	signal.Notify(interruptListener, os.Interrupt)
-	<-interruptListener
+	go startListener(viper.GetInt(conf.TcpTransparentProxyPort), connectDirectly)
+	startListener(viper.GetInt(conf.TlsTransparentProxyPort), issueConnectRequest)
 
 	log.Println("TProxy listener closing")
+}
+
+func startListener(port int, remoteDialer func(dest string) (net.Conn, error)) {
+	log.Println(fmt.Sprintf("Binding TCP TProxy listener to 0.0.0.0:%d", port))
+
+	tcpListener, err := tproxy.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: port})
+	if err != nil {
+		log.Panicln("Failed to establish TCP listener on port", port, err)
+	}
+
+	listen(tcpListener, remoteDialer)
 }
 
 // listenTCP runs in a routine to
 // accept TCP connections and hand them
 // off into their own routines for handling
-func listenTCP() {
+func listen(listener net.Listener, remoteDialer func(dest string) (net.Conn, error)) {
 	for {
-		conn, err := tcpListener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
 				log.Printf("Temporary error while accepting connection: %s", netErr)
@@ -55,37 +50,56 @@ func listenTCP() {
 			return
 		}
 
-		go handleTCPConn(conn)
+		go handleTCPConn(conn, remoteDialer)
 	}
 }
 
-// handleTCPConn will open a connection
-// to the original destination pretending
-// to be the client. From there it will setup
-// two routines to stream data between the
-// connections
-func handleTCPConn(conn net.Conn) {
+func handleTCPConn(conn net.Conn, remoteDialer func(dest string) (net.Conn, error)) {
 	log.Printf("Accepting TCP connection from %s with destination of %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
 	defer conn.Close()
 
-	remoteConn, err := net.Dial("tcp", conn.LocalAddr().String())
+	remoteConn, err := remoteDialer(conn.LocalAddr().String())
 	if err != nil {
-		log.Printf("Failed to connect to original destination [%s]: %s", conn.LocalAddr().String(), err)
-		return
+		log.Fatalln(err)
 	}
+	defer remoteConn.Close()
 
 	streamConn := func(dst io.Writer, src io.Reader) {
-		io.Copy(scanningWriter{dst}, src)
+		io.Copy(dst, src)
 	}
 	go streamConn(remoteConn, conn)
 	streamConn(conn, remoteConn)
 }
 
-type scanningWriter struct {
-	inner io.Writer
+func issueConnectRequest(dest string) (net.Conn, error) {
+
+	conn, err := net.Dial("tcp", viper.GetString(conf.ProxyLocation))
+	if err != nil {
+		return nil, err
+	}
+
+	tr := &http.Transport{
+		Dial: func(network, address string) (net.Conn, error) {
+			return conn, nil
+		},
+	}
+	pr, _ := io.Pipe()
+	req, err := http.NewRequest("CONNECT", "http://"+dest, pr)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("resp: %v", resp)
+	if resp.StatusCode != http.StatusOK {
+		return nil, err
+	}
+
+	return conn, nil
 }
 
-func (c scanningWriter) Write(p []byte) (n int, err error) {
-	fmt.Println(string(p))
-	return c.inner.Write(p)
+func connectDirectly(dest string) (net.Conn, error) {
+	return net.Dial("tcp", dest)
 }
