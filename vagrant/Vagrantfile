@@ -21,13 +21,12 @@ Vagrant.configure("2") do |config|
         vb.gui = false
       end
 
-      machine.vm.provision "file", source: machines["wg-conf"], destination: "/home/vagrant/wg0.conf"
+      machine.vm.provision :file, source: machines["wg-conf"], destination: "/tmp/wg-conf"
       machine.vm.provision "shell", name: "install-wireguard", path: "scripts/install-wireguard.sh"
 
       ## Client specific
       if machines["name"] == 'client'
-        ## This config needs to be separate because if the same script is used for both, in the second pass (server init) the script
-        ## gets applied first before any other (even though the ordering in Vagrantfile says otherwise) which breaks the order of initialisation
+        # init wireguard
         machine.vm.provision "shell", name: "configure-wireguard-client", path: "scripts/configure-wireguard-client.sh"
       end
 
@@ -38,7 +37,13 @@ Vagrant.configure("2") do |config|
         machine.vm.provision "shell", name: "install-iptables-persistence", path: "scripts/install-iptables-persistence.sh"
         machine.vm.provision "shell", name: "install-golang", path: "scripts/install-golang.sh", privileged: false
 
-        machine.vm.provision "shell", name: "configure-tproxy", path: "scripts/configure-tproxy.sh"
+        # configure tproxy
+        machine.vm.provision "shell", name: "configure-tproxy", path: "scripts/tproxy/tproxy-up.sh"
+        machine.vm.provision "shell", name: "server only - TProxy setup", inline: <<-SHELL
+               netfilter-persistent save
+        SHELL
+
+        # init wireguard
         machine.vm.provision "shell", name: "configure-wireguard-server", path: "scripts/configure-wireguard-server.sh"
       end
 
