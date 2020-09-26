@@ -26,6 +26,9 @@ Project contains a Vagrant file that spins up 2 machines (client, server). These
 13) [install the self-signed CA into the system](https://askubuntu.com/questions/73287/how-do-i-install-a-root-certificate) ("client" box) - you can find it in "workspace/repositories/ssl-decryption/assets" on the "server" machine
 14) repeat step 12) and you should get response without the SSL error
 
+## I want to install this on my machine
+If you want to install this to any other machine, open the Vagrantfile and follow the process for installing server/client (depends what you want). If you want to install the server part it is important to change the vagrant/wireguard/server/conf/up.sh (and down.sh as well) and update the name of the network interface on the last line. It must be the interface that is the gateway to the internet (e.g. if you are using wireless connection, it will probably be `wlan0` instead of `eth0`).
+
 ## Troubleshooting
 * `sudo wg` on any of the machine to troubleshoot the VPN connection
 
